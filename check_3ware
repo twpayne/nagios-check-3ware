@@ -1,0 +1,120 @@
+#!/usr/bin/env python
+#
+#   check_3ware  Nagios plugin to check 3ware RAIDs
+#   Copyright (C) 2010  Tom Payne
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+from optparse import OptionParser
+import re
+from subprocess import Popen, PIPE
+import sys
+
+
+OK, WARNING, CRITICAL, UNKNOWN = xrange(0, 4)
+status_message = 'OK WARNING CRITICAL UNKNOWN'.split()
+
+
+class ColumnParser(object):
+
+    def __init__(self, header):
+        self.columns = {}
+        index = 0
+        for m in re.finditer(r' (?=\S)', header):
+            self.columns[header[index:m.start()].rstrip()] = (index, m.start())
+            index = m.start() + 1
+        self.columns[header[index:].rstrip()] = (index, None)
+
+    def parse(self, line):
+        result = {}
+        for key, (start, end) in self.columns.items():
+            result[key] = line[start:end].rstrip()
+        return result
+
+
+class ThreeWare(object):
+
+    def __init__(self, ilines):
+        ilines.next()
+        self.units = {}
+        unit_parser = ColumnParser(ilines.next())
+        ilines.next()
+        for line in ilines:
+            if not line.rstrip():
+                break
+            unit = unit_parser.parse(line)
+            unit['VPorts'] = {}
+            self.units[unit['Unit']] = unit
+        vport_parser = ColumnParser(ilines.next())
+        ilines.next()
+        for line in ilines:
+            if not line.rstrip():
+                break
+            vport = vport_parser.parse(line)
+            if vport['Unit'] not in self.units:
+                self.units[vport['Unit']] = {'Unit': vport['Unit'], 'VPorts': {}}
+            self.units[vport['Unit']]['VPorts'][vport['VPort']] = vport
+        self.components = {}
+        component_parser = ColumnParser(ilines.next())
+        ilines.next()
+        for line in ilines:
+            if not line.rstrip():
+                break
+            component = component_parser.parse(line)
+            self.components[component['Name']] = component
+
+
+def main(argv):
+    parser = OptionParser()
+    parser.add_option('-c', dest='controller', type=int)
+    parser.add_option('-t', dest='tw_cli', help='path to tw_cli', metavar='PATH')
+    parser.set_defaults(controller=0)
+    parser.set_defaults(tw_cli='/usr/sbin/tw_cli')
+    options, args = parser.parse_args(argv[1:])
+    exit_status, messages = OK, []
+    tw_cli = Popen([options.tw_cli, '/c%d' % options.controller, 'show'], stdout=PIPE).communicate()[0]
+    _3ware = ThreeWare(iter(tw_cli.splitlines()))
+    for unit_name in sorted(_3ware.units.keys()):
+        unit = _3ware.units[unit_name]
+        message = ['Unit %s:' % unit_name[1:]]
+        if 'Status' in unit:
+            if unit['Status'] not in 'OK VERIFYING'.split():
+                exit_status = max(exit_status, CRITICAL)
+            statuses = []
+            statuses.append('%sGB' % unit['Size(GB)'])
+            statuses.append(unit['UnitType'])
+            statuses.append(unit['Status'])
+            if unit['%V/I/M'] != '-':
+                statuses.append(unit['%V/I/M'])
+            message.append(' '.join(statuses))
+        if 'VPorts' in unit:
+            for vport_name in sorted(unit['VPorts'].keys()):
+                vport = unit['VPorts'][vport_name]
+                if vport['Status'] not in 'OK NOT-PRESENT'.split():
+                    exit_status = max(exit_status, WARNING)
+                    encl_slot = vport['Encl-Slot'].split('/')
+                    message.append('Encl %s Slot %s: %s' % (encl_slot[2][1:], encl_slot[3][3:], vport['Status']))
+        messages.append(' '.join(message))
+    for component_name in sorted(_3ware.components.keys()):
+        component = _3ware.components[component_name]
+        if component['Status'] != 'OK':
+            exit_status = max(exit_status, CRITICAL)
+        messages.append('%s: %s' % (component_name.upper(), component['Status']))
+    print '3WARE %s: %s' % (status_message[exit_status], ', '.join(messages))
+    sys.exit(exit_status)
+
+
+if __name__ == '__main__':
+    main(sys.argv)
