@@ -85,9 +85,9 @@ def main(argv):
     options, args = parser.parse_args(argv[1:])
     exit_status, messages = OK, []
     tw_cli = Popen([options.tw_cli, '/c%d' % options.controller, 'show'], stdout=PIPE).communicate()[0]
-    _3ware = ThreeWare(iter(tw_cli.splitlines()))
-    for unit_name in sorted(_3ware.units.keys()):
-        unit = _3ware.units[unit_name]
+    tw = ThreeWare(iter(tw_cli.splitlines()))
+    for unit_name in sorted(tw.units.keys()):
+        unit = tw.units[unit_name]
         message = ['Unit %s:' % unit_name[1:]]
         if 'Status' in unit:
             if unit['Status'] not in 'OK VERIFYING'.split():
@@ -107,8 +107,7 @@ def main(argv):
                     encl_slot = vport['Encl-Slot'].split('/')
                     message.append('Encl %s Slot %s: %s' % (encl_slot[2][1:], encl_slot[3][3:], vport['Status']))
         messages.append(' '.join(message))
-    for component_name in sorted(_3ware.components.keys()):
-        component = _3ware.components[component_name]
+    for component_name in sorted(tw.components.keys()):
         if component['Status'] != 'OK':
             exit_status = max(exit_status, CRITICAL)
         messages.append('%s: %s' % (component_name.upper(), component['Status']))
